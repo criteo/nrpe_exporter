@@ -18,7 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 	l "github.com/sirupsen/logrus"
-	"gitlab.criteois.com/m.conraux/nrpe_exporter/nrpe"
+	"github.com/criteo/nrpe_exporter/nrpe"
 )
 
 const (
