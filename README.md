@@ -1,4 +1,4 @@
-# NRPE Exporter for Prometheus
+# NRPE Exporter for Prometheus [![Build Status](https://travis-ci.org/criteo/nrpe_exporter.svg?branch=master)](https://travis-ci.org/criteo/nrpe_exporter)
 
 ## Disclaimer: This project is inspired from the RobustPerception's [exporter](https://github.com/RobustPerception/nrpe_exporter) This is not an official Criteo product
 
