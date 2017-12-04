@@ -3,12 +3,10 @@
 ## Disclaimer: This project is inspired from the RobustPerception's [exporter](https://github.com/RobustPerception/nrpe_exporter) This is not an official Criteo product
 
 ## Building & Running
-    ```
     go get -v github.com/criteo/nrpe_exporter
     cd $GOPATH/src/github.com/criteo/nrpe_exporter
     dep ensure -vendor-only
     go install
-    ```
 
 ## What to expect ?
 
