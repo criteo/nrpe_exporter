@@ -14,11 +14,11 @@ import (
 
 	"sync"
 
+	"github.com/criteo/nrpe_exporter/nrpe"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 	l "github.com/sirupsen/logrus"
-	"github.com/criteo/nrpe_exporter/nrpe"
 )
 
 const (

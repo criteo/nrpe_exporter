@@ -1,2 +1,4 @@
+/bin
 /vendor
 /nrpe_exporter
+/nrpe_exporter*.tar.gz

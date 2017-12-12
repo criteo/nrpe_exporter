@@ -1,16 +1,23 @@
+sudo: false
 language: go
-
-go:
-  - 1.9.2
-
 env:
-  - DEP_VERSION="0.3.2"
-
-before_install:
-  # Download the binary to bin folder in $GOPATH
-  - curl -L -s https://github.com/golang/dep/releases/download/v${DEP_VERSION}/dep-linux-amd64 -o $GOPATH/bin/dep
-  # Make the binary executable
-  - chmod +x $GOPATH/bin/dep
-
-install:
-  - dep ensure -vendor-only
+- PROJECT="nrpe_exporter"
+go:
+- 1.9.x
+- 1.x
+script:
+- go test ./...
+- go build
+before_deploy:
+- go get github.com/mitchellh/gox
+- gox -os linux -output "./bin/{{.OS}}_{{.Arch}}/${PROJECT}"
+- for i in ./bin/*; do cp "$i/${PROJECT}" . && tar -cvf "${PROJECT}-${TRAVIS_TAG//v/}.${i##*/}.tar.gz" $PROJECT LICENSE; rm "${PROJECT}"; done
+deploy:
+  provider: releases
+  file_glob: true
+  file: "*.tar.gz"
+  skip_cleanup: true
+  on:
+    tags: true
+  api_key:
+    secure: ZT4xXqqiMHCDt/6EUg6lC2/fd+OovXDk5MOohySnLTSSdBPWjwJNTWO2zLV1FvM9qV92gFTh1o91x7IWxMQZ2kew0apJREDT3BA7cDT4mQ9YgQ9icbYoaaMQ6pxlN8wxL9sNHTfjvDQ4VvQIUpUgm1ZMVWX5L+YWuGPoBkzuQcbFutRSdip3S9cnpl2pMKZVwzxZQuawjk4DJY5Blw+EXUqAv2FS7XGaABd4pWwzAa+nE7FWU/BDn3dRSrphqa59P9PME+91Sz7pEs8Ak1/Q2Z5rE0pofEsT2TFhp0Kyp+Dq2WGQUsDniIgA92Tn6gSQpCMAkKTr18eueC3EF1mVyIn6ZJLtiKCka19L3VQHU1QcMB3h4AFM59aP3XKAknaomrwKI1lrxzOSO9FRCuKNOiNcIBWrx3FkzOAatyQNuIGPOKvM2wxJ09lO3KuvZdzo9BOKjSf89V8Q4dRxqN54PfE0OEEFvsb/bUgBPsKUUxmlxDuxIgLJkLhuoAfEwzDZPmpnwl+yUjr+cdEwKhEvbr6S02dSypQZ8P/Uu5fregHtKmptkMxahr8wBr0Saubv7pwueGrzqN6R7Y4DAXaX9D0sA0ePpqQHpgTDbKAdTSXETeAa98KV6KTEXbpsLH5V0sSiIdzoWwShaW57xA31UuRUYWpFmSaVmC9LJuA85tQ=
