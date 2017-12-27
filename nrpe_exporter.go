@@ -122,9 +122,15 @@ func (q *Query) Run() error {
 	if err != nil {
 		return err
 	}
-	l.WithField("statusCode", res.StatusCode).
-		WithField("statusLine", res.StatusLine).
-		Debugln("NRPE Response")
+	if res.StatusCode != 0 {
+		l.WithField("statusCode", res.StatusCode).
+			WithField("statusLine", res.StatusLine).
+			Warnln("NRPE Response")
+	} else {
+		l.WithField("statusCode", res.StatusCode).
+			WithField("statusLine", res.StatusLine).
+			Debugln("NRPE Response")
+	}
 	duration := time.Since(start).Seconds()
 	PerfDatas := []PerfData{}
 	outputs := strings.Split(res.StatusLine, "|")
@@ -135,13 +141,13 @@ func (q *Query) Run() error {
 		for _, perf := range strings.Split(perfDataString, ", ") {
 			a := strings.Split(strings.TrimSpace(perf), "=")
 			if len(a) != 2 {
-				l.Warnf("Error while parsing %s", perf)
+				l.Errorf("Error while parsing %s", perf)
 			}
 			key := a[0]
 			value, err := strconv.ParseFloat(a[1], 64)
 
 			if err != nil {
-				l.Warnln("Error while converting", err)
+				l.Errorln("Error while converting", err)
 			}
 			PerfDatas = append(PerfDatas, PerfData{key: key, value: value})
 
@@ -191,7 +197,7 @@ func (q *Query) Collect(ch chan<- prometheus.Metric) {
 				for _, ch := range q.metricsChans {
 					close(ch)
 				}
-				l.Errorf("Error while running the command:", err)
+				l.Errorln("Error while running the command:", err)
 			}
 		}()
 
