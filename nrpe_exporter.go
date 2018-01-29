@@ -48,33 +48,33 @@ type PerfData struct {
 
 // Command represent a Nagios's command (I.E: check_foo!bar!foobar)
 type Command struct {
-	command string
-	args    []string
+	Command string
+	Args    []string
 }
 
 // NewCommand returns a new Command object
 func NewCommand(command string, args []string) Command {
-	return Command{command: command, args: args}
+	return Command{Command: command, Args: args}
 }
 
 // Query is an instance of a command being run
 type Query struct {
-	sync.RWMutex
-	command      Command
-	metricsChans []chan prometheus.Metric
-	target       string
-	lock         bool
-	hash         uint64
-	exit         chan int
+	sync.RWMutex `hash:"ignore"`
+	Command      Command
+	metricsChans []chan prometheus.Metric `hash:"ignore"`
+	Target       string
+	lock         bool     `hash:"ignore"`
+	hash         uint64   `hash:"ignore"`
+	exit         chan int `hash:"ignore"`
 }
 
 // NewQuery returns a new Query object
 func NewQuery(target string, command string, args []string, lock bool) Query {
 
 	return Query{
-		command:      NewCommand(command, args),
+		Command:      NewCommand(command, args),
 		metricsChans: []chan prometheus.Metric{},
-		target:       target,
+		Target:       target,
 		lock:         lock,
 	}
 }
@@ -84,6 +84,7 @@ func GetQuery(target string, command string, args []string, lock bool) (*Query, 
 	ret := NewQuery(target, command, args, lock)
 	if lock {
 		hash, err := hashstructure.Hash(ret, nil)
+		l.Debugln("Hash computed is:", hash)
 		if err != nil {
 			return nil, err
 		}
@@ -107,14 +108,14 @@ func (q *Query) Run() error {
 	if q.lock {
 		defer runningQueries.Delete(q.hash)
 	}
-	conn, err := net.Dial("tcp", q.target)
+	conn, err := net.Dial("tcp", q.Target)
 	if err != nil {
 		return err
 	}
-	cmd := nrpe.NewCommand(q.command.command, q.command.args...)
+	cmd := nrpe.NewCommand(q.Command.Command, q.Command.Args...)
 	cmdLine := cmd.ToStatusLine()
 	l := l.WithFields(l.Fields{
-		"target":  q.target,
+		"target":  q.Target,
 		"command": cmdLine,
 	})
 	start := time.Now()
@@ -153,7 +154,6 @@ func (q *Query) Run() error {
 
 		}
 	}
-	//Check multiple status code passed in the URL
 	for _, ch := range q.metricsChans {
 		ch <- prometheus.MustNewConstMetric(
 			prometheus.NewDesc(prometheus.BuildFQName(NAMESPACE, "command", "duration"),
@@ -179,7 +179,6 @@ func (q *Query) Run() error {
 	return nil
 }
 
-// Describe implemented with dummy data to satisfy interface
 func (q *Query) Describe(ch chan<- *prometheus.Desc) {
 	ch <- prometheus.NewDesc("NRPE", "NRPE daemon metrics", nil, nil)
 }
