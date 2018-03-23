@@ -35,18 +35,9 @@ var (
 	verbose    = flag.Bool("v", false, "Trigger more verbose output")
 
 	runningQueries = sync.Map{}
-
-	defLabels      = []string{"command"}
-	perfDataLabels = append(defLabels, "perf_key")
 )
 
-// PerfData is a basic key-value representation for Nagios's Perfdata
-type PerfData struct {
-	key   string
-	value float64
-}
-
-// Command represent a Nagios's command (I.E: check_foo!bar!foobar)
+// Command represent a Nagios's Command (I.E: check_foo!bar!foobar)
 type Command struct {
 	Command string
 	Args    []string
@@ -57,25 +48,26 @@ func NewCommand(command string, args []string) Command {
 	return Command{Command: command, Args: args}
 }
 
-// Query is an instance of a command being run
+// Query is an instance of a Command being run
 type Query struct {
-	sync.RWMutex `hash:"ignore"`
+	*prometheus.Registry
 	Command      Command
-	metricsChans []chan prometheus.Metric `hash:"ignore"`
 	Target       string
-	lock         bool     `hash:"ignore"`
-	hash         uint64   `hash:"ignore"`
-	exit         chan int `hash:"ignore"`
+	lock         bool
+	hash         uint64
+	wg           sync.WaitGroup
+	o            sync.Once
+	err			 error
 }
 
 // NewQuery returns a new Query object
 func NewQuery(target string, command string, args []string, lock bool) Query {
 
 	return Query{
-		Command:      NewCommand(command, args),
-		metricsChans: []chan prometheus.Metric{},
-		Target:       target,
-		lock:         lock,
+		Command:  NewCommand(command, args),
+		Target:   target,
+		lock:     lock,
+		Registry: prometheus.NewRegistry(),
 	}
 }
 
@@ -84,7 +76,6 @@ func GetQuery(target string, command string, args []string, lock bool) (*Query, 
 	ret := NewQuery(target, command, args, lock)
 	if lock {
 		hash, err := hashstructure.Hash(ret, nil)
-		l.Debugln("Hash computed is:", hash)
 		if err != nil {
 			return nil, err
 		}
@@ -96,32 +87,72 @@ func GetQuery(target string, command string, args []string, lock bool) (*Query, 
 	return &ret, nil
 }
 
-// CommandResult type describing the result of command against nrpe-server
+// CommandResult type describing the result of Command against nrpe-server
 type CommandResult struct {
 	commandDuration float64
 	statusOk        float64
 	result          *nrpe.CommandResult
 }
 
-// Run Runs the query against the daemon TODO: Fix SSL
-func (q *Query) Run() error {
+// Run Runs the query against the daemon and return success and error if any
+func (q *Query) Run() {
 	if q.lock {
 		defer runningQueries.Delete(q.hash)
 	}
-	conn, err := net.Dial("tcp", q.Target)
-	if err != nil {
-		return err
-	}
+
 	cmd := nrpe.NewCommand(q.Command.Command, q.Command.Args...)
 	cmdLine := cmd.ToStatusLine()
-	l := l.WithFields(l.Fields{
-		"target":  q.Target,
-		"command": cmdLine,
+	duration := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   "command",
+		Name:        "duration",
+		Help:        "The time it took to run the command.",
+		ConstLabels: prometheus.Labels{"command": cmdLine},
 	})
-	start := time.Now()
+	status := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   "command",
+		Name:        "status",
+		Help:        "The status code returned by the server.",
+		ConstLabels: prometheus.Labels{"command": cmdLine},
+	})
+	locked := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   "command",
+		Name:        "locked_query",
+		Help:        "1 if the query have shared its lock",
+		ConstLabels: prometheus.Labels{"command": cmdLine},
+	})
+	perfDatas := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   "command",
+		Name:        "perf_data",
+		Help:        "1 if the query has been locked by another",
+		ConstLabels: prometheus.Labels{"command": cmdLine},
+	}, []string{"perfdata_key"})
+
+	// Register the metrics
+	q.MustRegister(duration, status, locked, perfDatas)
+
+	// Put the duration even in case of failures
+	defer func(t time.Time) { duration.Set(time.Since(t).Seconds()) }(time.Now())
+
+	l := l.WithFields(l.Fields{
+		"Target":  q.Target,
+		"Command": cmdLine,
+	})
+
+	conn, err := net.Dial("tcp", q.Target)
+	if err != nil {
+		l.Errorf("connection to %s failed: %s", q.Target, err)
+		q.err = err
+		return
+	}
+
 	res, err := nrpe.Run(conn, cmd, false, *timeout)
 	if err != nil {
-		return err
+		q.err = err
+		return
 	}
 	if res.StatusCode != 0 {
 		l.WithField("statusCode", res.StatusCode).
@@ -132,8 +163,8 @@ func (q *Query) Run() error {
 			WithField("statusLine", res.StatusLine).
 			Debugln("NRPE Response")
 	}
-	duration := time.Since(start).Seconds()
-	PerfDatas := []PerfData{}
+
+	status.Set(float64(res.StatusCode))
 	outputs := strings.Split(res.StatusLine, "|")
 	if len(outputs) == 2 {
 		perfDataString := outputs[1]
@@ -143,69 +174,31 @@ func (q *Query) Run() error {
 			a := strings.Split(strings.TrimSpace(perf), "=")
 			if len(a) != 2 {
 				l.Errorf("Error while parsing %s", perf)
+				continue
 			}
 			key := a[0]
 			value, err := strconv.ParseFloat(a[1], 64)
 
 			if err != nil {
 				l.Errorln("Error while converting", err)
+				continue
 			}
-			PerfDatas = append(PerfDatas, PerfData{key: key, value: value})
+			metric, err := perfDatas.GetMetricWithLabelValues(key)
+			if err != nil {
+				l.Errorf("Error while setting label values", err)
+				continue
+			}
+			metric.Set(value)
 
 		}
 	}
-	for _, ch := range q.metricsChans {
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(NAMESPACE, "command", "duration"),
-				"The time it took NRPE to execute the command",
-				defLabels, nil),
-			prometheus.GaugeValue,
-			duration, cmdLine,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(NAMESPACE, "command", "status"), "The exit code of the NRPE command.", defLabels, nil),
-			prometheus.GaugeValue,
-			float64(res.StatusCode), cmdLine,
-		)
-		for _, p := range PerfDatas {
-			ch <- prometheus.MustNewConstMetric(
-				prometheus.NewDesc(prometheus.BuildFQName(NAMESPACE, "command", "perf_datas"), fmt.Sprintf("Performance data value"), perfDataLabels, nil),
-				prometheus.GaugeValue,
-				p.value, cmdLine, p.key,
-			)
-		}
-		close(ch)
-	}
-	return nil
+	q.err = nil
+	return
 }
 
+// Describe implemented with dummy data to satisfy interface
 func (q *Query) Describe(ch chan<- *prometheus.Desc) {
 	ch <- prometheus.NewDesc("NRPE", "NRPE daemon metrics", nil, nil)
-}
-
-// Collect Check for the state of the command and wait for the original query.
-func (q *Query) Collect(ch chan<- prometheus.Metric) {
-	sender := make(chan prometheus.Metric)
-	q.Lock()
-	q.metricsChans = append(q.metricsChans, sender)
-	if len(q.metricsChans) == 1 {
-		q.Unlock()
-		go func() {
-			err := q.Run()
-			if err != nil {
-				for _, ch := range q.metricsChans {
-					close(ch)
-				}
-				l.Errorln("Error while running the command:", err)
-			}
-		}()
-
-	} else {
-		q.Unlock()
-	}
-	for m := range sender {
-		ch <- m
-	}
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +208,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	target := params.Get("target")
 	if target == "" {
 		http.Error(w, "Target parameter is missing", 400)
+		return
 	}
 	port := params.Get("port")
 	if port == "" {
@@ -223,7 +217,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	target = fmt.Sprintf("%s:%s", target, port)
 	cmd := params.Get("command")
 	if cmd == "" {
-		http.Error(w, "Command parameter is missing", 400)
+		http.Error(w, "command parameter is missing", 400)
 		return
 	}
 	lock := params.Get("lock") != "" && params.Get("lock") != "0"
@@ -231,9 +225,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	query, err := GetQuery(target, cmd, args, lock)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error while getting the query: %s", err), 500)
+		return
 	}
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(query)
+	registry := query.Registry
+
+	query.o.Do(func() {
+		query.wg.Add(1)
+		query.Run()
+		query.wg.Done()
+	})
+
+	query.wg.Wait()
+
+	if query.err != nil {
+		http.Error(w, fmt.Sprintf("Error while running the query: %s", query.err), 500 )
+		return
+	}
 	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	h.ServeHTTP(w, r)
 }
@@ -256,7 +263,7 @@ func main() {
 				<p><a href="/metrics">This binary self-exported metrics</a></p>
 
 				<h2>Format</h2>
-				<p> "http://127.0.0.1:9235/run?target=|remote-nrpe-daemon-ip|&command=|nrpe-command|&args=foo&arg=bar&arg=foobar&lock=1" </p>
+				<p> "http://127.0.0.1:9235/run?target=|remote-nrpe-daemon-ip|&command=|nrpe-command|&Args=foo&arg=bar&arg=foobar&lock=1" </p>
 
 				<p> You can use the lock=1 query parameter to prevent automagically concurrent executions. All queries will get the locked run results
 
